@@ -22,8 +22,8 @@ def generate_dummy_players(num_players=15):
                 "preferred_foot": random.choice(feet),
                 "main_position": random.choice(positions),
                 "sub_positions": random.sample(positions, 2),
-                "total_apps": random.randint(0, 100),
-                "average_rating": round(random.uniform(6.5, 8.5), 2)
+                "total_apps": 0,
+                "average_rating": 0.0
             },
             "status": {
                 "condition": random.randint(1, 5),

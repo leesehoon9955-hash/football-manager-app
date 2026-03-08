@@ -620,6 +620,15 @@ elif selected_menu == '선수 평가':
     st.subheader("📊 선수 종합 스탯")
     st.write("선수들의 경기 기록을 바탕으로 산출된 주요 스탯입니다.")
 
+    if st.button("🔴 모든 선수 통계 초기화", help="모든 선수의 출전 수와 평균 평점을 0으로 초기화합니다. 이 작업은 되돌릴 수 없습니다."):
+        players_df = load_players_data()
+        if not players_df.empty:
+            players_df['player_info.total_apps'] = 0
+            players_df['player_info.average_rating'] = 0.0
+            save_players_data(players_df)
+            st.success("모든 선수의 통계가 초기화되었습니다.")
+            st.rerun()
+
     players_df = load_players_data()
     
     if players_df.empty:
@@ -1387,6 +1396,16 @@ elif selected_menu == '경기 결과 기록':
         selected_match_display = st.selectbox("결과를 기록할 경기를 선택하세요", options=list(match_options.keys()))
         
         selected_match_id = match_options.get(selected_match_display)
+
+        # 경기 삭제 버튼 (selectbox 바로 아래 배치)
+        if selected_match_id:
+            if st.button("🗑️ 이 경기 일정 삭제", type="secondary", key="del_scheduled_btn"):
+                all_matches = load_matches_data()
+                updated_matches = [m for m in all_matches if m['id'] != selected_match_id]
+                save_matches_data(updated_matches)
+                st.success("경기 일정이 삭제되었습니다.")
+                st.rerun()
+
         if selected_match_id:
             selected_match = next((m for m in scheduled_matches if m['id'] == selected_match_id), None)
             
