@@ -902,13 +902,14 @@ elif selected_menu == 'AI 라인업 생성':
                                 2. [전술 피드백]: 왜 현재 선발된 10명을 이렇게 배치했는지 강력한 논리로 설명하고, 이번 쿼터 상대방을 공략하기 위한 핵심 전술(빌드업 타겟, 스태미나 안배 등)을 브리핑하세요.
                                 
                                 출력 형식은 반드시 아래의 JSON 포맷을 그대로 복사하여 사용할 수 있도록 "순수 JSON" 문자열만 출력해 주세요. 마크다운(` ```json ` 등) 블록이나 설명 텍스트를 JSON 텍스트 바깥에 적지 마세요.
+                                ⚠️ 중요: JSON 내의 모든 문자열 값에서 실제 줄바꿈(Enter)은 절대 사용하지 말고, 반드시 `\\n`으로 이스케이프 처리하세요.
                                 
                                 {{
                                     "optimized_positions": [
                                         {{"name": "선수이름1", "position": "SW|CB|LB|RB|LWB|RWB|DM|CM|LM|RM|AM|ST|CF|LW|RW|SS 중 하나만 선택"}},
                                         ...총 10명...
                                     ],
-                                    "tactical_feedback": "**[포지션 배치 이유]**\n(설명 내용)\n\n**[이번 쿼터 핵심 전술 가이드]**\n(전술 내용)\n\n**[감독의 종합 의견]**\n(스쿼드 밸런스 총평 등)"
+                                    "tactical_feedback": "**[포지션 배치 이유]**\\n(설명 내용)\\n\\n**[이번 쿼터 핵심 전술 가이드]**\\n(전술 내용)\\n\\n**[감독의 종합 의견]**\\n(스쿼드 밸런스 총평 등)"
                                 }}
                                 
                                 출전 선수 명단 및 스탯 (JSON):
@@ -963,6 +964,12 @@ elif selected_menu == 'AI 라인업 생성':
                                     response_text = response_text[_bs:_be + 1]
                                 # 3단계: trailing comma 제거
                                 response_text = re.sub(r',\s*([\}\]])', r'\1', response_text)
+                                
+                                # 4단계: JSON 문자열 내의 이스케이프되지 않은 줄바꿈 처리 (가장 흔한 실패 원인)
+                                def _escape_json_newlines(match):
+                                    return match.group(0).replace('\n', '\\n').replace('\r', '\\r')
+                                response_text = re.sub(r'"(?:[^"\\]|\\.)*"', _escape_json_newlines, response_text, flags=re.DOTALL)
+
                                 try:
                                     ai_result = json.loads(response_text)
                                     
