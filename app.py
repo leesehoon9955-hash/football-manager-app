@@ -307,6 +307,7 @@ def save_matches_data(matches_list):
 def draw_pitch(formation, gk_name, field_players, all_players_df=None, opt_mapping=None):
     """쿼터별 포메이션 이미지를 생성합니다."""
     import matplotlib.patheffects as patheffects
+    import re as _re
     
     # 모바일 환경에 맞게 크기 축소
     fig, ax = plt.subplots(figsize=(4, 5.5), dpi=100)
@@ -318,20 +319,20 @@ def draw_pitch(formation, gk_name, field_players, all_players_df=None, opt_mappi
         ax.add_patch(patches.Rectangle((-5, i*10 - 5), 110, 10, facecolor=color, edgecolor='none', zorder=0))
 
     # 경기장 라인 그리기
-    plt.plot([0, 100, 100, 0, 0], [0, 0, 100, 100, 0], color='white', linewidth=2, zorder=1)
-    plt.plot([0, 100], [50, 50], color='white', linewidth=1.5, zorder=1)  # 하프라인
+    ax.plot([0, 100, 100, 0, 0], [0, 0, 100, 100, 0], color='white', linewidth=2, zorder=1)
+    ax.plot([0, 100], [50, 50], color='white', linewidth=1.5, zorder=1)  # 하프라인
     circle = patches.Circle((50, 50), 10, edgecolor='white', facecolor='none', linewidth=1.5, zorder=1)
     ax.add_patch(circle)
     center_dot = patches.Circle((50, 50), 0.5, facecolor='white', zorder=1)
     ax.add_patch(center_dot)
     
     # 페널티 박스 (하단, 상단)
-    plt.plot([20, 20, 80, 80], [0, 18, 18, 0], color='white', linewidth=1.5, zorder=1)
-    plt.plot([20, 20, 80, 80], [100, 82, 82, 100], color='white', linewidth=1.5, zorder=1)
+    ax.plot([20, 20, 80, 80], [0, 18, 18, 0], color='white', linewidth=1.5, zorder=1)
+    ax.plot([20, 20, 80, 80], [100, 82, 82, 100], color='white', linewidth=1.5, zorder=1)
     
     # 골 에어리어
-    plt.plot([35, 35, 65, 65], [0, 6, 6, 0], color='white', linewidth=1.5, zorder=1)
-    plt.plot([35, 35, 65, 65], [100, 94, 94, 100], color='white', linewidth=1.5, zorder=1)
+    ax.plot([35, 35, 65, 65], [0, 6, 6, 0], color='white', linewidth=1.5, zorder=1)
+    ax.plot([35, 35, 65, 65], [100, 94, 94, 100], color='white', linewidth=1.5, zorder=1)
 
     # 페널티 아크 (대략적인 표현)
     arc_bottom = patches.Arc((50, 18), 15, 10, theta1=0, theta2=180, edgecolor='white', linewidth=1.5, zorder=1)
@@ -349,7 +350,7 @@ def draw_pitch(formation, gk_name, field_players, all_players_df=None, opt_mappi
         'LW': 1, 'RW': 1, 'SS': 1, 'CF': 1, 'ST': 2,
     }
 
-    # 포메이션별 슬롯 좌표 (x, y, slot_label) — 슬롯 y값이 깊이 순서 반영됨
+    # 포메이션별 슬롯 좌표 (x, y, slot_label)
     formations = {
         "4-4-2": [
             (15, 18, 'LB'), (38, 15, 'CB'), (62, 15, 'CB'), (85, 18, 'RB'),
@@ -358,7 +359,7 @@ def draw_pitch(formation, gk_name, field_players, all_players_df=None, opt_mappi
         ],
         "4-3-3": [
             (15, 18, 'LB'), (38, 15, 'CB'), (62, 15, 'CB'), (85, 18, 'RB'),
-            (25, 33, 'DM'), (50, 42, 'CM'), (75, 33, 'DM'),   # 슬롯에 DM 추가
+            (25, 33, 'DM'), (50, 42, 'CM'), (75, 33, 'DM'),
             (22, 78, 'LW'), (50, 83, 'ST'), (78, 78, 'RW')
         ],
         "3-5-2": [
@@ -382,9 +383,6 @@ def draw_pitch(formation, gk_name, field_players, all_players_df=None, opt_mappi
         elif cat == 'DEF': return '#43A047'
         return '#757575'
 
-    def pos_depth(pos):
-        return _POS_DEPTH.get(pos.upper(), 1)
-
     coords = formations.get(formation, formations["4-4-2"])
     path_eff = [patheffects.withStroke(linewidth=2, foreground='w')]
 
@@ -395,10 +393,17 @@ def draw_pitch(formation, gk_name, field_players, all_players_df=None, opt_mappi
     _norm = {'LS':'ST','RS':'ST','LCF':'CF','RCF':'CF',
              'LCM':'CM','RCM':'CM','CDM':'DM','CAM':'AM','LCB':'CB','RCB':'CB'}
 
+    # 이름 정규화 함수 (비알파벳/숫자 제거 및 소문자화)
+    def normalize_name(s):
+        return _re.sub(r'[^a-zA-Z0-9가-힣]', '', str(s)).lower()
+
+    # 정규화된 매핑 생성 (AI 응답 Hallucination 대응)
+    norm_opt_mapping = {normalize_name(k): v for k, v in opt_mapping.items()}
+
     # 선수별 정규화 포지션 계산
     player_pos = {}
     for name in field_players:
-        raw = opt_mapping.get(name, 'CM').upper().strip()
+        raw = norm_opt_mapping.get(normalize_name(name), 'CM').upper().strip()
         player_pos[name] = _norm.get(raw, raw)
 
     assigned_players = []
@@ -437,7 +442,6 @@ def draw_pitch(formation, gk_name, field_players, all_players_df=None, opt_mappi
     _MID_Y = {'DM': 30, 'LM': 40, 'RM': 40, 'CM': 42, 'AM': 55}
     mid_players = [n for n in field_players if get_position_category(player_pos.get(n,'CM'))=='MID']
 
-    # 같은 Y 레벨로 그룹화
     from collections import defaultdict as _dd
     mid_y_groups = _dd(list)
     for name in mid_players:
@@ -448,7 +452,6 @@ def draw_pitch(formation, gk_name, field_players, all_players_df=None, opt_mappi
     for y in sorted(mid_y_groups.keys()):
         group = mid_y_groups[y]
         n = len(group)
-        # n=1일 때 n-1=0이 되어 발생하는 ZeroDivisionError 방지를 위해 분기 처리
         if n == 1:
             xs = [50]
         elif n == 2:
@@ -520,7 +523,7 @@ def draw_pitch(formation, gk_name, field_players, all_players_df=None, opt_mappi
     ax.set_xlim(-2, 102)
     ax.set_ylim(-2, 102)
     ax.axis('off')
-    plt.subplots_adjust(left=0.02, right=0.98, top=0.98, bottom=0.02) # 여백 최소화
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.98, bottom=0.02)
     return fig
 
 # --- UI 구성 ---
@@ -963,26 +966,30 @@ elif selected_menu == 'AI 라인업 생성':
                                 try:
                                     ai_result = json.loads(response_text)
                                     
-                                    # 1. AI 응답 이름을 원본 명단 이름과 매칭 (Hallucination 방지)
+                                    # 1. AI 응답 이름을 원본 명단 이름과 매칭 (Hallucination 방지 강화)
                                     opt_positions_canonical = {}
                                     final_field_canonical = []
                                     
+                                    # 이름 정규화 함수 (비알파벳/숫자 제거 및 소문자화)
+                                    def normalize_name(s):
+                                        return re.sub(r'[^a-zA-Z0-9가-힣]', '', s).lower()
+
                                     for p in ai_result.get('optimized_positions', []):
                                         ai_name = p['name']
                                         best_match = None
                                         
-                                        # 정규화 매칭 (공백 제거, 소문자)
-                                        norm_ai = ai_name.lower().replace(" ", "")
+                                        # 1단계: 완전 일치 (정규화 기준)
+                                        norm_ai = normalize_name(ai_name)
                                         for fp in field_players:
-                                            norm_fp = fp.lower().replace(" ", "")
-                                            if norm_ai == norm_fp:
+                                            if norm_ai == normalize_name(fp):
                                                 best_match = fp
                                                 break
                                         
-                                        # 부분 일치 확인 (예: "손흥민" vs "손흥민 (C)")
+                                        # 2단계: 부분 일치 (Hallucination 대응: "1. 손흥민" 등)
                                         if not best_match:
                                             for fp in field_players:
-                                                if norm_ai in fp.lower().replace(" ", "") or fp.lower().replace(" ", "") in norm_ai:
+                                                norm_fp = normalize_name(fp)
+                                                if norm_ai in norm_fp or norm_fp in norm_ai:
                                                     best_match = fp
                                                     break
                                         
@@ -994,24 +1001,24 @@ elif selected_menu == 'AI 라인업 생성':
                                     missing_players = [p for p in field_players if p not in final_field_canonical]
                                     final_field_canonical.extend(missing_players)
                                     
-                                    # 3. 최종 데이터 업데이트 (원본 이름들로 구성)
+                                    # 3. 최종 데이터 업데이트
                                     quarter_lineups[i]['field'] = final_field_canonical[:10]
                                     
                                     # 포지션 매핑 정보를 원본 이름 키로 세션에 저장 (UI 표시용)
                                     if 'optimized_mappings' not in st.session_state:
                                         st.session_state['optimized_mappings'] = {}
-                                    st.session_state['optimized_mappings'][q_num] = opt_positions_canonical
+                                    # 키를 문자열로 통합 (History 로드 시와 호환성 유지)
+                                    st.session_state['optimized_mappings'][str(q_num)] = opt_positions_canonical
                                     
                                     # 전략 피드백 업데이트
-                                    tactical_feedbacks[q_num] = ai_result.get('tactical_feedback', "전술 브리핑 정보가 비어있습니다.")
+                                    tactical_feedbacks[str(q_num)] = ai_result.get('tactical_feedback', "전술 브리핑 정보가 비어있습니다.")
                                     
                                 except json.JSONDecodeError as e:
                                     print(f"JSON Parsing Error for Q{q_num}: {e}")
-                                    print(f"Response Dump: {response_text}")
-                                    tactical_feedbacks[q_num] = f"AI 연산 중 포맷 오류 발생.\n\n```json\n{response_text}\n```"
+                                    tactical_feedbacks[str(q_num)] = f"AI 연산 중 포맷 오류 발생.\n\n```json\n{response_text}\n```"
                                 except Exception as e:
                                     print(f"Other Error for Q{q_num}: {e}")
-                                    tactical_feedbacks[q_num] = f"알 수 없는 오류 발생: {e}"
+                                    tactical_feedbacks[str(q_num)] = f"알 수 없는 오류 발생: {e}\n\nRaw Response: {response_text}"
                                 
                                 progress_bar.progress(int((i+1) / match_quarters * 100))
                                 
@@ -1023,10 +1030,10 @@ elif selected_menu == 'AI 라인업 생성':
                             import traceback
                             error_msg = traceback.format_exc()
                             st.error(f"AI 연동 중 문제가 발생했습니다: {e}")
-                            st.session_state['tactical_feedbacks'] = {q['quarter']: f"🚨 **AI 생성 실패**\n오류 내용:\n```python\n{error_msg}\n```" for q in quarter_lineups}
+                            st.session_state['tactical_feedbacks'] = {str(q['quarter']): f"🚨 **AI 생성 실패**\n오류 내용:\n```python\n{error_msg}\n```" for q in quarter_lineups}
                     else:
                         st.error("GEMINI_API_KEY 환경 변수가 없습니다. `.env` 파일을 확인해주세요.")
-                        st.session_state['tactical_feedbacks'] = {q['quarter']: "🚨 **AI 분석 불가**: `.env` 파일에 `GEMINI_API_KEY`가 설정되지 않았습니다." for q in quarter_lineups}
+                        st.session_state['tactical_feedbacks'] = {str(q['quarter']): "🚨 **AI 분석 불가**: `.env` 파일에 `GEMINI_API_KEY`가 설정되지 않았습니다." for q in quarter_lineups}
 
                     st.rerun()
 
@@ -1062,16 +1069,23 @@ elif selected_menu == 'AI 라인업 생성':
                     q_num = lineup['quarter']
                     
                     # AI 분석 성공 여부 판단 (optimized_mappings에 해당 쿼터 데이터 존재 여부)
-                    q_mapping = opt_mappings.get(q_num, {})
+                    # 생성 시 str(q_num)으로 저장했으므로 str() 변환하여 조회
+                    q_mapping = opt_mappings.get(str(q_num), {})
                     ai_success = bool(q_mapping)
 
                     # 브리핑 출력 (성공 시 info, 실패 시 error 박스)
-                    if tactical_feedbacks and q_num in tactical_feedbacks:
+                    feedback_text = tactical_feedbacks.get(str(q_num))
+                    if feedback_text:
                         st.markdown("### 🎙️ AI 감독의 라커룸 전술 브리핑")
                         if ai_success:
-                            st.info(tactical_feedbacks[q_num])
+                            st.info(feedback_text)
                         else:
-                            st.error(tactical_feedbacks[q_num])
+                            st.error(feedback_text)
+                        
+                        # 분석 실패 시 Raw Response 디버깅용 익스팬더 제공
+                        if not ai_success:
+                            with st.expander("🔍 AI 응답 원본 (디버깅용)"):
+                                st.code(feedback_text if "Raw Response:" in feedback_text else "상세 오류 정보가 없습니다.")
                         st.divider()
 
                     if not ai_success:
@@ -1082,7 +1096,8 @@ elif selected_menu == 'AI 라인업 생성':
                         )
                         st.write("#### 📋 배정된 선수 명단 (포지션 미확정)")
                         st.markdown(f"**🥅 GK:** {lineup['gk']}")
-                        st.markdown(f"**필드 ({len(lineup['field'])}명):** {', '.join(lineup['field'])}")
+                        field_names = [str(p) for p in lineup['field']]
+                        st.markdown(f"**필드 ({len(field_names)}명):** {', '.join(field_names)}")
                     else:
                         # ── AI 분석 성공: 이미지 + AI 포지션 기반 명단 표시 ───
                         col_img, col_list = st.columns([2, 1])
