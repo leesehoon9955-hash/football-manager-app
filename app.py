@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import platform
 import google.generativeai as genai
-from utils import generate_dummy_players, unflatten_dict
+from utils import generate_dummy_players, unflatten_dict, run_verification_report, ENABLE_VERIFICATION
 
 # .env 파일에서 환경 변수 로드
 load_dotenv()
@@ -783,8 +783,42 @@ elif selected_menu == 'AI 라인업 생성':
                                 {json.dumps(player_stats_list, ensure_ascii=False)}
                                 """
                                 
-                                response = model.generate_content(prompt)
+                                # ── 429 재시도 로직 (최대 3회) ─────────────────────
+                                import time
+                                from google.api_core.exceptions import ResourceExhausted
+
+                                max_retries = 3
+                                response = None
+                                for attempt in range(1, max_retries + 1):
+                                    try:
+                                        response = model.generate_content(prompt)
+                                        break  # 성공 시 루프 탈출
+                                    except ResourceExhausted as rate_err:
+                                        if attempt == max_retries:
+                                            raise  # 마지막 시도도 실패하면 상위 예외로 전달
+                                        # 에러 메시지에서 대기 시간(초) 파싱
+                                        wait_sec = 60  # 기본 대기
+                                        import re as _re2
+                                        m_delay = _re2.search(r'retry in (\d+(?:\.\d+)?)s', str(rate_err))
+                                        if m_delay:
+                                            wait_sec = int(float(m_delay.group(1))) + 2  # 여유 2초 추가
+                                        
+                                        # 프로그레스 바 위에 카운트다운 표시
+                                        retry_placeholder = st.empty()
+                                        for remaining in range(wait_sec, 0, -1):
+                                            retry_placeholder.warning(
+                                                f"⏳ API 요청 한도 초과 (429). "
+                                                f"**{remaining}초** 후 자동 재시도합니다... "
+                                                f"(시도 {attempt}/{max_retries - 1})"
+                                            )
+                                            time.sleep(1)
+                                        retry_placeholder.empty()
+                                
+                                if response is None:
+                                    raise RuntimeError("Gemini API 응답 없음: 모든 재시도 실패")
                                 response_text = response.text.strip()
+
+
                                 
                                 # 정규표현식을 사용하여 중괄호 {} 로 둘러싸인 JSON 블록만 추출 (마크다운/채팅 텍스트 무시)
                                 json_match = re.search(r'\{[\s\S]*\}', response_text)
@@ -793,28 +827,49 @@ elif selected_menu == 'AI 라인업 생성':
                                     
                                 try:
                                     ai_result = json.loads(response_text)
-                                    # Gemini가 재배치한 순서와 포지션 정보 추합
-                                    opt_names = []
-                                    opt_positions = {}
-                                    for p in ai_result.get('optimized_positions', []):
-                                        opt_names.append(p['name'])
-                                        opt_positions[p['name']] = p.get('position', 'UNKNOWN')
-                                        
-                                    if len(opt_names) > 0:
-                                        # 최대한 매칭되는 선수만 업데이트
-                                        valid_opt_names = [n for n in opt_names if n in field_players]
-                                        # 모자란 인원은 기존 명단에서 채움
-                                        missing_players = [p for p in field_players if p not in valid_opt_names]
-                                        final_field = valid_opt_names + missing_players
-                                        quarter_lineups[i]['field'] = final_field[:10]
-                                        
-                                        # 포지션 매핑 정보를 세션에 저장 (UI 표시용)
-                                        if 'optimized_mappings' not in st.session_state:
-                                            st.session_state['optimized_mappings'] = {}
-                                        st.session_state['optimized_mappings'][q_num] = opt_positions
                                     
-                                    # 전략은 이름 검증과 무관하게 항상 표시
+                                    # 1. AI 응답 이름을 원본 명단 이름과 매칭 (Hallucination 방지)
+                                    opt_positions_canonical = {}
+                                    final_field_canonical = []
+                                    
+                                    for p in ai_result.get('optimized_positions', []):
+                                        ai_name = p['name']
+                                        best_match = None
+                                        
+                                        # 정규화 매칭 (공백 제거, 소문자)
+                                        norm_ai = ai_name.lower().replace(" ", "")
+                                        for fp in field_players:
+                                            norm_fp = fp.lower().replace(" ", "")
+                                            if norm_ai == norm_fp:
+                                                best_match = fp
+                                                break
+                                        
+                                        # 부분 일치 확인 (예: "손흥민" vs "손흥민 (C)")
+                                        if not best_match:
+                                            for fp in field_players:
+                                                if norm_ai in fp.lower().replace(" ", "") or fp.lower().replace(" ", "") in norm_ai:
+                                                    best_match = fp
+                                                    break
+                                        
+                                        if best_match and best_match not in final_field_canonical:
+                                            final_field_canonical.append(best_match)
+                                            opt_positions_canonical[best_match] = p.get('position', 'UNKNOWN')
+
+                                    # 2. 누락된 선수가 있다면 기존 명단 순서대로 보충
+                                    missing_players = [p for p in field_players if p not in final_field_canonical]
+                                    final_field_canonical.extend(missing_players)
+                                    
+                                    # 3. 최종 데이터 업데이트 (원본 이름들로 구성)
+                                    quarter_lineups[i]['field'] = final_field_canonical[:10]
+                                    
+                                    # 포지션 매핑 정보를 원본 이름 키로 세션에 저장 (UI 표시용)
+                                    if 'optimized_mappings' not in st.session_state:
+                                        st.session_state['optimized_mappings'] = {}
+                                    st.session_state['optimized_mappings'][q_num] = opt_positions_canonical
+                                    
+                                    # 전략 피드백 업데이트
                                     tactical_feedbacks[q_num] = ai_result.get('tactical_feedback', "전술 브리핑 정보가 비어있습니다.")
+                                    
                                 except json.JSONDecodeError as e:
                                     print(f"JSON Parsing Error for Q{q_num}: {e}")
                                     print(f"Response Dump: {response_text}")
@@ -871,55 +926,113 @@ elif selected_menu == 'AI 라인업 생성':
                     lineup = quarter_lineups[i]
                     q_num = lineup['quarter']
                     
-                    # 브리핑 출력부분 (전술판보다 먼저 표시되도록 상단에 배치)
+                    # AI 분석 성공 여부 판단 (optimized_mappings에 해당 쿼터 데이터 존재 여부)
+                    q_mapping = opt_mappings.get(q_num, {})
+                    ai_success = bool(q_mapping)
+
+                    # 브리핑 출력 (성공 시 info, 실패 시 error 박스)
                     if tactical_feedbacks and q_num in tactical_feedbacks:
                         st.markdown("### 🎙️ AI 감독의 라커룸 전술 브리핑")
-                        st.info(tactical_feedbacks[q_num])
+                        if ai_success:
+                            st.info(tactical_feedbacks[q_num])
+                        else:
+                            st.error(tactical_feedbacks[q_num])
                         st.divider()
 
-                    col_img, col_list = st.columns([2, 1])
-                    
-                    q_mapping = opt_mappings.get(q_num, {})
-                    
-                    with col_img:
-                        fig = draw_pitch(st.session_state.get('generated_formation', '4-4-2'), lineup['gk'], lineup['field'], all_players_df, q_mapping)
-                        st.pyplot(fig, use_container_width=True)
-                    
-                    with col_list:
-                        st.write("#### 📝 출전 명단")
-                        st.markdown(f"**🥅 GK (1명)**\n- {lineup['gk']}")
-                        
-                        # 카테고리별 분류 로직
-                        fwd_list = []
-                        mid_list = []
-                        def_list = []
-                        
-                        for p in lineup['field']:
-                            # AI 할당 포지션이 있으면 그걸 쓰고, 없으면 DB의 main_position을 참조
-                            pos = q_mapping.get(p)
-                            if not pos or pos == "UNKNOWN":
-                                match_db = all_players_df[all_players_df['player_info.name'] == p]
-                                if not match_db.empty:
-                                    pos = match_db.iloc[0].get('player_info.main_position', 'CM')
-                                else:
-                                    pos = 'CM'
-                                    
-                            # 포지션에 따라 3선으로 분류
-                            if pos in ['SW', 'CB', 'LB', 'RB', 'LWB', 'RWB']:
-                                def_list.append(f"{p} ({pos})")
-                            elif pos in ['DM', 'CM', 'LM', 'RM', 'AM']:
-                                mid_list.append(f"{p} ({pos})")
-                            else: # FWD
-                                fwd_list.append(f"{p} ({pos})")
-                        
-                        st.markdown(f"**⚔️ 공격수 ({len(fwd_list)}명)**")
-                        for p in fwd_list: st.markdown(f"- {p}")
-                        
-                        st.markdown(f"**🛡️ 미드필더 ({len(mid_list)}명)**")
-                        for p in mid_list: st.markdown(f"- {p}")
-                        
-                        st.markdown(f"**🧱 수비수 ({len(def_list)}명)**")
-                        for p in def_list: st.markdown(f"- {p}")
+                    if not ai_success:
+                        # ── AI 분석 실패: 이미지 비활성화, 명단만 표시 ────────
+                        st.warning(
+                            "⚠️ AI 포지션 분석에 실패하여 라인업 이미지와 포지션 배치를 표시할 수 없습니다.\n\n"
+                            "전술 브리핑의 오류 내용을 확인하고 다시 생성해주세요."
+                        )
+                        st.write("#### 📋 배정된 선수 명단 (포지션 미확정)")
+                        st.markdown(f"**🥅 GK:** {lineup['gk']}")
+                        st.markdown(f"**필드 ({len(lineup['field'])}명):** {', '.join(lineup['field'])}")
+                    else:
+                        # ── AI 분석 성공: 이미지 + AI 포지션 기반 명단 표시 ───
+                        col_img, col_list = st.columns([2, 1])
+
+                        with col_img:
+                            fig = draw_pitch(
+                                st.session_state.get('generated_formation', '4-4-2'),
+                                lineup['gk'], lineup['field'], all_players_df, q_mapping
+                            )
+                            st.pyplot(fig, use_container_width=True)
+
+                        with col_list:
+                            st.write("#### 📝 출전 명단")
+                            st.markdown(f"**🥅 GK (1명)**\n- {lineup['gk']}")
+
+                            # AI 포지션만 사용, DB 폴백 없음
+                            fwd_list  = []
+                            mid_list  = []
+                            def_list  = []
+                            unassigned_list = []
+
+                            for p in lineup['field']:
+                                pos = q_mapping.get(p)
+                                if not pos or pos == "UNKNOWN":
+                                    unassigned_list.append(p)
+                                    continue
+                                if pos in ['SW', 'CB', 'LB', 'RB', 'LWB', 'RWB']:
+                                    def_list.append(f"{p} ({pos})")
+                                elif pos in ['DM', 'CM', 'LM', 'RM', 'AM']:
+                                    mid_list.append(f"{p} ({pos})")
+                                else:  # FWD
+                                    fwd_list.append(f"{p} ({pos})")
+
+                            st.markdown(f"**⚔️ 공격수 ({len(fwd_list)}명)**")
+                            for p in fwd_list: st.markdown(f"- {p}")
+
+                            st.markdown(f"**🛡️ 미드필더 ({len(mid_list)}명)**")
+                            for p in mid_list: st.markdown(f"- {p}")
+
+                            st.markdown(f"**🧱 수비수 ({len(def_list)}명)**")
+                            for p in def_list: st.markdown(f"- {p}")
+
+                            if unassigned_list:
+                                st.markdown(f"**❓ 포지션 미확정 ({len(unassigned_list)}명)**")
+                                for p in unassigned_list: st.markdown(f"- {p}")
+
+            # ── 🔬 [개발자용] 데이터 일관성 검증 ─────────────────
+            st.divider()
+            with st.expander("🔬 [개발자용] 데이터 일관성 검증", expanded=False):
+                if not ENABLE_VERIFICATION:
+                    st.info("검증 기능이 비활성화 상태입니다. `utils.py`의 `ENABLE_VERIFICATION = True`로 설정하면 활성화됩니다.")
+                else:
+                    if st.button("▶ 검증 실행", key="run_verify_btn"):
+                        verify_data = {
+                            "quarter_lineups": st.session_state.get('quarter_lineups', []),
+                            "tactical_feedbacks": st.session_state.get('tactical_feedbacks', {}),
+                            "optimized_mappings": st.session_state.get('optimized_mappings', {}),
+                            "formation": st.session_state.get('generated_formation', '4-4-2'),
+                        }
+                        vresult = run_verification_report(verify_data)
+                        if vresult:
+                            st.session_state['_verify_result'] = vresult
+
+                    vresult = st.session_state.get('_verify_result')
+                    if vresult:
+                        summary = vresult.get('summary', 'UNKNOWN')
+                        summary_badge = "✅ PASS" if summary == "PASS" else "❌ FAIL"
+                        st.markdown(f"### 종합 결과: {summary_badge}")
+
+                        status_icon = {"PASS": "✅", "FAIL": "❌", "WARN": "⚠️"}
+                        # 검사 항목명으로 그룹핑하여 표 형태로 표시
+                        check_names = list(dict.fromkeys(c['name'] for c in vresult['checks']))
+                        for name in check_names:
+                            st.markdown(f"**{name}**")
+                            group = [c for c in vresult['checks'] if c['name'] == name]
+                            rows = []
+                            for c in group:
+                                rows.append({
+                                    "쿼터": f"Q{c['quarter']}" if c['quarter'] is not None else "-",
+                                    "결과": status_icon.get(c['status'], '?') + ' ' + c['status'],
+                                    "상세": c['detail'],
+                                })
+                            st.dataframe(rows, use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("'▶ 검증 실행' 버튼을 눌러 검증을 시작하세요.")
 
             st.divider()
             st.subheader("🗓️ 경기 일정 생성")
