@@ -861,7 +861,7 @@ elif selected_menu == 'AI 라인업 생성':
 - 브리핑 어조는 자신감 있고 전문적이며 선수들에게 동기를 부여하는 스타일로 작성하세요.
 - 절대 명단에 없는 선수 이름을 만들어내거나(Hallucination), 허용되지 않은 포지션 코드를 사용하지 마세요."""
                             model = genai.GenerativeModel(
-                                "gemini-2.5-flash",
+                                "gemini-3-flash-preview",
                                 system_instruction=_SYSTEM_INSTRUCTION
                             )
                             
