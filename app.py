@@ -339,7 +339,17 @@ def draw_pitch(formation, gk_name, field_players, all_players_df=None, opt_mappi
     arc_top = patches.Arc((50, 82), 15, 10, theta1=180, theta2=360, edgecolor='white', linewidth=1.5, zorder=1)
     ax.add_patch(arc_top)
 
-    # 포메이션별 고정 포지션 및 좌표 정의 (수비부터 공격 순)
+    # 포지션 깊이 순서 (낮을수록 수비적, 높을수록 공격적)
+    _POS_DEPTH = {
+        # DEF 라인
+        'SW': 0, 'CB': 1, 'LB': 1, 'RB': 1, 'LWB': 2, 'RWB': 2,
+        # MID 라인 (핵심: DM < CM < AM)
+        'DM': 0, 'LM': 1, 'CM': 1, 'RM': 1, 'AM': 2,
+        # FWD 라인
+        'LW': 1, 'RW': 1, 'SS': 1, 'CF': 1, 'ST': 2,
+    }
+
+    # 포메이션별 슬롯 좌표 (x, y, slot_label) — 슬롯 y값이 깊이 순서 반영됨
     formations = {
         "4-4-2": [
             (15, 18, 'LB'), (38, 15, 'CB'), (62, 15, 'CB'), (85, 18, 'RB'),
@@ -348,75 +358,157 @@ def draw_pitch(formation, gk_name, field_players, all_players_df=None, opt_mappi
         ],
         "4-3-3": [
             (15, 18, 'LB'), (38, 15, 'CB'), (62, 15, 'CB'), (85, 18, 'RB'),
-            (30, 40, 'CM'), (50, 38, 'CM'), (70, 40, 'CM'),
-            (25, 75, 'LW'), (50, 80, 'ST'), (75, 75, 'RW')
+            (25, 33, 'DM'), (50, 42, 'CM'), (75, 33, 'DM'),   # 슬롯에 DM 추가
+            (22, 78, 'LW'), (50, 83, 'ST'), (78, 78, 'RW')
         ],
         "3-5-2": [
             (25, 15, 'CB'), (50, 15, 'CB'), (75, 15, 'CB'),
-            (15, 45, 'LWB'), (35, 40, 'CM'), (50, 38, 'CM'), (65, 40, 'CM'), (85, 45, 'RWB'),
-            (35, 75, 'CF'), (65, 75, 'ST')
+            (10, 42, 'LWB'), (30, 35, 'DM'), (50, 42, 'CM'), (70, 35, 'DM'), (90, 42, 'RWB'),
+            (35, 78, 'CF'), (65, 78, 'ST')
         ]
     }
 
     def get_position_category(pos):
+        pos = pos.upper()
         if pos in ['SW', 'CB', 'LB', 'RB', 'LWB', 'RWB']: return 'DEF'
-        elif pos in ['DM', 'CM', 'LM', 'RM', 'AM']: return 'MID'
-        elif pos in ['LW', 'RW', 'SS', 'CF', 'ST']: return 'FWD'
+        elif pos in ['DM', 'CM', 'LM', 'RM', 'AM']:         return 'MID'
+        elif pos in ['LW', 'RW', 'SS', 'CF', 'ST']:         return 'FWD'
         return 'MID'
 
     def get_position_color(pos):
         cat = get_position_category(pos)
-        if cat == 'FWD': return '#E53935' # 빨강
-        elif cat == 'MID': return '#1E88E5' # 파랑
-        elif cat == 'DEF': return '#43A047' # 초록
+        if cat == 'FWD': return '#E53935'
+        elif cat == 'MID': return '#1E88E5'
+        elif cat == 'DEF': return '#43A047'
         return '#757575'
 
-    # 해당 포메이션 좌표 가져오기
-    coords = formations.get(formation, formations["4-4-2"])
+    def pos_depth(pos):
+        return _POS_DEPTH.get(pos.upper(), 1)
 
-    # 스타일 설정
+    coords = formations.get(formation, formations["4-4-2"])
     path_eff = [patheffects.withStroke(linewidth=2, foreground='w')]
 
-    # 선수 배정 로직 (AI 매핑 최우선)
-    available_slots = list(coords)
-    assigned_players = []
-    unassigned_players = []
-    
     if opt_mapping is None:
         opt_mapping = {}
 
-    # 1. AI가 할당한 정확한 포지션 슬롯 매칭
+    # ── 포지션 인식 배치 로직 ─────────────────────────────────────
+    _norm = {'LS':'ST','RS':'ST','LCF':'CF','RCF':'CF',
+             'LCM':'CM','RCM':'CM','CDM':'DM','CAM':'AM','LCB':'CB','RCB':'CB'}
+
+    # 선수별 정규화 포지션 계산
+    player_pos = {}
     for name in field_players:
-        pos = opt_mapping.get(name, "UNKNOWN")
-        matched = False
-        for i, slot in enumerate(available_slots):
-            if slot[2] == pos:
-                assigned_players.append((slot[0], slot[1], slot[2], name))
-                available_slots.pop(i)
-                matched = True
-                break
-        if not matched:
-            unassigned_players.append(name)
-            
-    # 2. 남은 선수들을 남은 슬롯에 순차 배정
-    for name in unassigned_players:
-        if available_slots:
-            slot = available_slots.pop(0)
-            assigned_players.append((slot[0], slot[1], slot[2], name))
+        raw = opt_mapping.get(name, 'CM').upper().strip()
+        player_pos[name] = _norm.get(raw, raw)
+
+    assigned_players = []
+
+    # ── DEF 라인: 정확 슬롯 매칭 (LB→LB, RB→RB, CB→CB) ─────────
+    def_slots   = sorted([s for s in coords if get_position_category(s[2])=='DEF'], key=lambda s:(s[0]))  # x 오름차순
+    def_players = [n for n in field_players if get_position_category(player_pos.get(n,'CM'))=='DEF']
+
+    # 포지션별로 분리
+    lb_like  = [n for n in def_players if player_pos[n] in ('LB','LWB')]
+    rb_like  = [n for n in def_players if player_pos[n] in ('RB','RWB')]
+    cb_like  = [n for n in def_players if player_pos[n] not in ('LB','LWB','RB','RWB')]
+
+    # 슬롯도 좌측/우측/중앙으로 분리
+    left_slots   = [s for s in def_slots if s[2] in ('LB','LWB')]
+    right_slots  = [s for s in def_slots if s[2] in ('RB','RWB')]
+    center_slots = [s for s in def_slots if s[2] not in ('LB','LWB','RB','RWB')]
+
+    used_def = set()
+    def assign_exact(players, slots):
+        for name, slot in zip(players, slots):
+            assigned_players.append((slot[0], slot[1], player_pos[name], name))
+            used_def.add(name)
+
+    assign_exact(lb_like, left_slots)
+    assign_exact(rb_like, right_slots)
+    assign_exact(cb_like, center_slots)
+    # 남은 DEF 선수 → 남은 DEF 슬롯에 순서대로
+    used_slots_xy = {(x,y) for x,y,_,_ in assigned_players}
+    leftover_def_slots = [s for s in def_slots if (s[0],s[1]) not in used_slots_xy]
+    leftover_def_players = [n for n in def_players if n not in used_def]
+    for name, slot in zip(leftover_def_players, leftover_def_slots):
+        assigned_players.append((slot[0], slot[1], player_pos[name], name))
+
+    # ── MID 라인: 포지션별 Y좌표 동적 배치 ──────────────────────
+    _MID_Y = {'DM': 30, 'LM': 40, 'RM': 40, 'CM': 42, 'AM': 55}
+    mid_players = [n for n in field_players if get_position_category(player_pos.get(n,'CM'))=='MID']
+
+    # 같은 Y 레벨로 그룹화
+    from collections import defaultdict as _dd
+    mid_y_groups = _dd(list)
+    for name in mid_players:
+        pos = player_pos[name]
+        y = _MID_Y.get(pos, 42)
+        mid_y_groups[y].append((name, pos))
+
+    for y in sorted(mid_y_groups.keys()):
+        group = mid_y_groups[y]
+        n = len(group)
+        # n=1일 때 n-1=0이 되어 발생하는 ZeroDivisionError 방지를 위해 분기 처리
+        if n == 1:
+            xs = [50]
+        elif n == 2:
+            xs = [25, 75]
+        elif n == 3:
+            xs = [15, 50, 85]
+        elif n == 4:
+            xs = [10, 35, 65, 90]
+        elif n > 4:
+            xs = [10 + i * 80 // (n - 1) for i in range(n)]
+        else:
+            xs = []
+        # LM/RM 포지션은 좌우 고정
+        lm = [(nm,pos) for nm,pos in group if pos=='LM']
+        rm = [(nm,pos) for nm,pos in group if pos=='RM']
+        cm = [(nm,pos) for nm,pos in group if pos not in ('LM','RM')]
+        center_xs = [50] if len(cm)==1 else ([25,75] if len(cm)==2 else xs[:len(cm)])
+        for (nm,pos), x in zip(cm, center_xs):
+            assigned_players.append((x, y, pos, nm))
+        for nm,pos in lm:
+            assigned_players.append((12, y, pos, nm))
+        for nm,pos in rm:
+            assigned_players.append((88, y, pos, nm))
+
+    # ── FWD 라인: 정확 슬롯 매칭 (LW→LW, RW→RW, 나머지→중앙) ──
+    fwd_slots   = sorted([s for s in coords if get_position_category(s[2])=='FWD'], key=lambda s:(s[0]))
+    fwd_players = [n for n in field_players if get_position_category(player_pos.get(n,'CM'))=='FWD']
+
+    lw_players = [n for n in fwd_players if player_pos[n]=='LW']
+    rw_players = [n for n in fwd_players if player_pos[n]=='RW']
+    ct_players = [n for n in fwd_players if player_pos[n] not in ('LW','RW')]
+    lw_slots   = [s for s in fwd_slots if s[2]=='LW']
+    rw_slots   = [s for s in fwd_slots if s[2]=='RW']
+    ct_slots   = [s for s in fwd_slots if s[2] not in ('LW','RW')]
+
+    for name, slot in zip(lw_players, lw_slots):
+        assigned_players.append((slot[0], slot[1], player_pos[name], name))
+    for name, slot in zip(rw_players, rw_slots):
+        assigned_players.append((slot[0], slot[1], player_pos[name], name))
+    for name, slot in zip(ct_players, ct_slots):
+        assigned_players.append((slot[0], slot[1], player_pos[name], name))
+    # 넘치는 FWD → 남은 FWD 슬롯
+    used_fwd = {nm for _,_,_,nm in assigned_players}
+    remaining_fwd = [n for n in fwd_players if n not in used_fwd]
+    used_xy = {(x,y) for x,y,_,_ in assigned_players}
+    spare_fwd = [s for s in fwd_slots if (s[0],s[1]) not in used_xy]
+    for name, slot in zip(remaining_fwd, spare_fwd):
+        assigned_players.append((slot[0], slot[1], player_pos[name], name))
+
 
     # 필드 플레이어 그리기
     for x, y, pos_name, name in assigned_players:
         color = get_position_color(pos_name)
-        
-        # 선수 위치 원
         p_circle = patches.Circle((x, y), 6, edgecolor='white', facecolor=color, linewidth=1.5, zorder=3)
         ax.add_patch(p_circle)
-        
-        # 포지션 텍스트 (원 안)
         ax.text(x, y, pos_name, ha='center', va='center', color='white', fontweight='bold', fontsize=8, zorder=4)
-        # 선수 이름 텍스트 (원 위)
         txt = ax.text(x, y + 9, name, ha='center', va='center', color='black', fontweight='bold', fontsize=10, zorder=4)
         txt.set_path_effects(path_eff)
+
+
 
     # GK 배치
     gk_circle = patches.Circle((50, 5), 6, edgecolor='white', facecolor='#FB8C00', linewidth=1.5, zorder=3)
@@ -632,7 +724,18 @@ elif selected_menu == 'AI 라인업 생성':
             non_gk_participants = [p for p in participants if p not in gk_players]
             low_condition_players = st.multiselect("컨디션 난조/부상 (필드 플레이어 중 최대 2쿼터 제한)", options=non_gk_participants)
 
-        # 2. AI 분석 실행
+        # 2. 경기별 감독 추가 지시사항 (선택)
+        with st.expander("🎯 감독 전술 지시사항 (선택)", expanded=False):
+            st.caption("AI 감독에게 이번 경기의 전술 방향성을 미리 알려주세요. 비워두면 AI가 능력치 기반으로 자유롭게 분석합니다.")
+            extra_instruction = st.text_area(
+                label="추가 지시사항",
+                placeholder="예: 오늘은 수비를 탄탄히 하고 역습 위주로 가져가라. 체력이 좋은 선수는 공격적으로 활용하라.",
+                height=100,
+                key="extra_tactical_instruction",
+                label_visibility="collapsed"
+            )
+
+        # 3. AI 분석 실행
         if st.button("🚀 AI 라인업 분석 및 생성", type="primary"):
             total_gk_quarters = sum(s['gk'] for s in gk_settings.values()) if gk_settings else 0
             
@@ -737,8 +840,18 @@ elif selected_menu == 'AI 라인업 생성':
                             progress_bar = st.progress(0)
                             tactical_feedbacks = {}
                             
-                            # Gemini 모델 초기화
-                            model = genai.GenerativeModel("gemini-2.5-flash")
+                            # Gemini 모델 초기화 (system_instruction으로 고정 페르소나 설정)
+                            _SYSTEM_INSTRUCTION = """당신은 아마추어 K5리그 축구 감독 AI입니다.
+규칙:
+- 전술 브리핑은 반드시 한국어로 작성합니다.
+- 선수 능력치(기술, 체력, 멘탈)를 근거로 포지션 배치 이유를 논리적으로 설명하지만, 능력치 언급은 직접적으로 절대 하지 않습니다. 
+- 빌드업 패턴, 압박 위치, 세트피스 활용, 쿼터별 체력 안배를 분석에 포함하세요.
+- 브리핑 어조는 자신감 있고 전문적이며 선수들에게 동기를 부여하는 스타일로 작성하세요.
+- 절대 명단에 없는 선수 이름을 만들어내거나(Hallucination), 허용되지 않은 포지션 코드를 사용하지 마세요."""
+                            model = genai.GenerativeModel(
+                                "gemini-2.5-flash",
+                                system_instruction=_SYSTEM_INSTRUCTION
+                            )
                             
                             for i, q_lineup in enumerate(quarter_lineups):
                                 q_num = q_lineup['quarter']
@@ -760,20 +873,27 @@ elif selected_menu == 'AI 라인업 생성':
                                         }
                                         player_stats_list.append(stat_info)
                                 
+                                # 경기별 추가 지시사항 주입
+                                _extra = st.session_state.get('extra_tactical_instruction', '').strip()
+                                _extra_block = f"\n\n[감독 추가 지시사항]\n{_extra}" if _extra else ""
+
                                 prompt = f"""
-                                당신은 안첼로티, 과르디올라 급의 세계적인 명장 축구 감독입니다.
                                 이번 쿼터({q_num}쿼터)에 출전이 확정된 10명의 필드 플레이어 명단과 그들의 핵심 능력치 스탯이 제공됩니다.
-                                당신이 사용할 전술 포메이션은 {formation} 입니다.
-                                
+                                당신이 사용할 전술 포메이션은 {formation} 입니다.{_extra_block}
+
                                 <지시사항>
                                 1. [포지션 최적화]: 제공된 10명의 선수를 {formation} 포메이션의 10개 위치에 최적화되게 배치하세요. 선수의 체력, 패스, 주력 등을 모두 분석하세요. 선수는 반드시 제공된 10명만 사용해야 하며, 절대 누락이나 외부 인원을 추가해서는 안 됩니다.
+                                   ⚠️ 포지션 코드는 아래 목록에서만 선택해야 합니다. 목록 외 코드(LS, RS, LCF, RCF 등)는 절대 사용하지 마세요:
+                                   • 수비(DEF): SW, CB, LB, RB, LWB, RWB
+                                   • 미드(MID): DM, CM, LM, RM, AM
+                                   • 공격(FWD): ST, CF, LW, RW, SS
                                 2. [전술 피드백]: 왜 현재 선발된 10명을 이렇게 배치했는지 강력한 논리로 설명하고, 이번 쿼터 상대방을 공략하기 위한 핵심 전술(빌드업 타겟, 스태미나 안배 등)을 브리핑하세요.
                                 
                                 출력 형식은 반드시 아래의 JSON 포맷을 그대로 복사하여 사용할 수 있도록 "순수 JSON" 문자열만 출력해 주세요. 마크다운(` ```json ` 등) 블록이나 설명 텍스트를 JSON 텍스트 바깥에 적지 마세요.
                                 
                                 {{
                                     "optimized_positions": [
-                                        {{"name": "선수이름1", "position": "포지션명(예: ST, CM, CB 등)"}},
+                                        {{"name": "선수이름1", "position": "SW|CB|LB|RB|LWB|RWB|DM|CM|LM|RM|AM|ST|CF|LW|RW|SS 중 하나만 선택"}},
                                         ...총 10명...
                                     ],
                                     "tactical_feedback": "**[포지션 배치 이유]**\n(설명 내용)\n\n**[이번 쿼터 핵심 전술 가이드]**\n(전술 내용)\n\n**[감독의 종합 의견]**\n(스쿼드 밸런스 총평 등)"
@@ -819,12 +939,18 @@ elif selected_menu == 'AI 라인업 생성':
                                 response_text = response.text.strip()
 
 
-                                
-                                # 정규표현식을 사용하여 중괄호 {} 로 둘러싸인 JSON 블록만 추출 (마크다운/채팅 텍스트 무시)
-                                json_match = re.search(r'\{[\s\S]*\}', response_text)
-                                if json_match:
-                                    response_text = json_match.group(0)
-                                    
+                                # ── 강건한 JSON 추출 (3단계) ──────────────────────
+                                # 1단계: 마크다운 코드블록 제거 (```json...``` or ```...```)
+                                _md = re.search(r'```(?:json)?\s*([\s\S]*?)```', response_text)
+                                if _md:
+                                    response_text = _md.group(1).strip()
+                                # 2단계: 첫 '{' 부터 마지막 '}' 까지 추출
+                                _bs = response_text.find('{')
+                                _be = response_text.rfind('}')
+                                if _bs != -1 and _be != -1:
+                                    response_text = response_text[_bs:_be + 1]
+                                # 3단계: trailing comma 제거
+                                response_text = re.sub(r',\s*([\}\]])', r'\1', response_text)
                                 try:
                                     ai_result = json.loads(response_text)
                                     
@@ -953,11 +1079,26 @@ elif selected_menu == 'AI 라인업 생성':
                         col_img, col_list = st.columns([2, 1])
 
                         with col_img:
+                            # ── 포지션 코드 정규화 (draw_pitch 슬롯 매칭용) ──────
+                            # AI가 반환한 비표준 코드 → 포메이션 슬롯 코드로 변환
+                            _POS_NORM = {
+                                # 공격
+                                'LS': 'ST', 'RS': 'ST', 'LCF': 'CF', 'RCF': 'CF',
+                                # 미드필더
+                                'LCM': 'CM', 'RCM': 'CM', 'CDM': 'DM', 'CAM': 'AM',
+                                # 수비
+                                'LCB': 'CB', 'RCB': 'CB',
+                            }
+                            normalized_mapping = {
+                                player: _POS_NORM.get(pos.upper(), pos.upper())
+                                for player, pos in q_mapping.items()
+                            }
                             fig = draw_pitch(
                                 st.session_state.get('generated_formation', '4-4-2'),
-                                lineup['gk'], lineup['field'], all_players_df, q_mapping
+                                lineup['gk'], lineup['field'], all_players_df, normalized_mapping
                             )
                             st.pyplot(fig, use_container_width=True)
+
 
                         with col_list:
                             st.write("#### 📝 출전 명단")
@@ -974,12 +1115,39 @@ elif selected_menu == 'AI 라인업 생성':
                                 if not pos or pos == "UNKNOWN":
                                     unassigned_list.append(p)
                                     continue
-                                if pos in ['SW', 'CB', 'LB', 'RB', 'LWB', 'RWB']:
+
+                                pos_up = pos.upper().strip()
+
+                                # 수비 판정: CB·LCB·RCB·LB·RB·LWB·RWB·SW 계열
+                                # 1단계: 허용된 포지션 정확 매칭
+                                ALLOWED_DEF = {'SW', 'CB', 'LB', 'RB', 'LWB', 'RWB'}
+                                ALLOWED_MID = {'DM', 'CM', 'LM', 'RM', 'AM'}
+                                ALLOWED_FWD = {'ST', 'CF', 'LW', 'RW', 'SS'}
+
+                                if pos_up in ALLOWED_DEF:
                                     def_list.append(f"{p} ({pos})")
-                                elif pos in ['DM', 'CM', 'LM', 'RM', 'AM']:
+                                elif pos_up in ALLOWED_MID:
                                     mid_list.append(f"{p} ({pos})")
-                                else:  # FWD
+                                elif pos_up in ALLOWED_FWD:
                                     fwd_list.append(f"{p} ({pos})")
+                                else:
+                                    # 2단계: prefix 기반 유사 포지션 처리 (LS, RS, LCB, RCM …)
+                                    def_keywords = ('CB', 'LB', 'RB', 'WB', 'SW')
+                                    mid_keywords = ('DM', 'CM', 'LM', 'RM', 'AM')
+                                    # LS/RS: S로 끝나는 공격형 변형 포지션 포함
+                                    fwd_keywords = ('ST', 'CF', 'LW', 'RW', 'SS', 'FW', 'WG', 'LS', 'RS')
+
+                                    if any(kw in pos_up for kw in def_keywords):
+                                        def_list.append(f"{p} ({pos})")
+                                    elif any(kw in pos_up for kw in mid_keywords):
+                                        mid_list.append(f"{p} ({pos})")
+                                    elif any(kw in pos_up for kw in fwd_keywords):
+                                        fwd_list.append(f"{p} ({pos})")
+                                    else:
+                                        # 그래도 분류 불가 → 미확정
+                                        unassigned_list.append(f"{p} ({pos})")
+
+
 
                             st.markdown(f"**⚔️ 공격수 ({len(fwd_list)}명)**")
                             for p in fwd_list: st.markdown(f"- {p}")
@@ -1068,41 +1236,137 @@ elif selected_menu == 'AI 라인업 생성':
                             "status": "scheduled",
                             "lineup": list(lineup_ids),
                             "quarter_lineups": quarter_lineups,
+                            "optimized_mappings": st.session_state.get('optimized_mappings', {}),
+                            "tactical_feedbacks": st.session_state.get('tactical_feedbacks', {}),
+                            "generated_formation": st.session_state.get('generated_formation', '4-4-2'),
                             "result": {}
                         }
                         
                         matches.append(new_match)
                         save_matches_data(matches)
                         
-                        # 세션 초기화
-                        del st.session_state['quarter_lineups']
+                        # 세션 초기화 (관련 데이터 모두 삭제)
+                        keys_to_del = ['quarter_lineups', 'lineup_summary', 'tactical_feedbacks', 'optimized_mappings', 'generated_formation']
+                        for k in keys_to_del:
+                            if k in st.session_state:
+                                del st.session_state[k]
                         st.success(f"{match_date} vs {opponent_name} 경기가 생성되었습니다!")
                         st.rerun()
 
 elif selected_menu == '경기 목록':
-    st.write("생성된 경기 목록을 확인합니다. 경기 결과 기록은 '경기 결과 기록' 탭에서 할 수 있습니다.")
+    st.write("생성된 경기 목록과 AI 라인업 분석 내역을 확인합니다.")
     
+    all_players_df = load_players_data()
     matches = load_matches_data()
     
     if not matches:
         st.info("아직 생성된 경기가 없습니다. 'AI 라인업 생성' 탭에서 경기를 생성해주세요.")
     else:
-        # 결과를 보기 쉽게 DataFrame으로 변환
-        display_data = []
-        for m in matches:
-            res = m.get('result', {})
-            score = f"{res.get('home_score', '-')} : {res.get('away_score', '-')}" if m.get('status') == 'completed' else "경기 전"
-            display_data.append({
-                "날짜": m.get('date'),
-                "상대": m.get('opponent'),
-                "상태": {"scheduled": "예정", "completed": "종료"}.get(m.get('status'), m.get('status')),
-                "결과": score
-            })
+        # 경기 선택 옵션 생성 (날짜 + 상대팀)
+        match_options = {f"[{m.get('date')}] vs {m.get('opponent')}": m['id'] for m in matches}
+        selected_match_display = st.selectbox("조회할 경기를 선택하세요", options=list(match_options.keys()))
         
-        st.dataframe(pd.DataFrame(display_data), use_container_width=True, hide_index=True)
+        selected_match_id = match_options.get(selected_match_display)
+        selected_match = next((m for m in matches if m['id'] == selected_match_id), None)
+        
+        if selected_match:
+            st.divider()
+            
+            # 경기 요약 섹션
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("경기 날짜", selected_match.get('date'))
+            with col2:
+                st.metric("상대 팀", selected_match.get('opponent'))
+            with col3:
+                res = selected_match.get('result', {})
+                score = f"{res.get('home_score', '-')} : {res.get('away_score', '-')}" if selected_match.get('status') == 'completed' else "경기 전"
+                st.metric("경기 결과", score)
 
+            # AI 데이터 존재 여부 확인
+            q_lineups = selected_match.get('quarter_lineups', [])
+            saved_mappings = selected_match.get('optimized_mappings', {})
+            saved_feedbacks = selected_match.get('tactical_feedbacks', {})
+            saved_formation = selected_match.get('generated_formation', '4-4-2')
+
+            if not q_lineups:
+                st.warning("해당 경기에 저장된 라인업 데이터가 없습니다.")
+            else:
+                st.write(f"### 📋 AI 분석 및 라인업 상세 ({saved_formation})")
+                
+                # 쿼터별 탭 생성
+                q_tabs = st.tabs([f"{q['quarter']}쿼터" for q in q_lineups])
+                
+                for i, tab in enumerate(q_tabs):
+                    with tab:
+                        lineup = q_lineups[i]
+                        q_num = lineup['quarter']
+                        
+                        # AI 데이터 사용 (구버전 데이터 대응)
+                        q_mapping = saved_mappings.get(str(q_num), saved_mappings.get(q_num, {}))
+                        q_feedback = saved_feedbacks.get(str(q_num), saved_feedbacks.get(q_num, ""))
+                        ai_success = bool(q_mapping)
+
+                        # 1. 브리핑 표시
+                        if q_feedback:
+                            st.markdown("#### 🎙️ AI 감독의 전술 브리핑")
+                            st.info(q_feedback)
+                            st.divider()
+
+                        # 2. 이미지 및 명단
+                        if not ai_success:
+                            st.caption("해당 쿼터의 상세 AI 포지션 분석 데이터가 없습니다.")
+                            st.markdown(f"**🥅 GK:** {lineup['gk']}")
+                            st.markdown(f"**필드:** {', '.join(lineup['field'])}")
+                        else:
+                            col_img, col_list = st.columns([2, 1])
+                            
+                            with col_img:
+                                # 저장된 매핑을 그대로 사용하여 피치 렌더링
+                                fig = draw_pitch(
+                                    saved_formation,
+                                    lineup['gk'], lineup['field'], all_players_df, q_mapping
+                                )
+                                st.pyplot(fig, use_container_width=True)
+
+                            with col_list:
+                                st.write("#### 📝 출전 명단")
+                                st.markdown(f"**🥅 GK**\n- {lineup['gk']}")
+                                
+                                # 포지션별 분류 (main_logic과 동일하게 UI 구성)
+                                f_fwd, f_mid, f_def, f_un = [], [], [], []
+                                for p in lineup['field']:
+                                    pos = q_mapping.get(p, "UNKNOWN").upper()
+                                    if any(kw in pos for kw in ('ST','CF','LW','RW','SS','LS','RS')): f_fwd.append(f"{p} ({pos})")
+                                    elif any(kw in pos for kw in ('DM','CM','LM','RM','AM')): f_mid.append(f"{p} ({pos})")
+                                    elif any(kw in pos for kw in ('CB','LB','RB','WB','SW')): f_def.append(f"{p} ({pos})")
+                                    else: f_un.append(f"{p} ({pos})")
+
+                                if f_fwd:
+                                    st.markdown("**⚔️ 공격수**")
+                                    for p in f_fwd: st.markdown(f"- {p}")
+                                if f_mid:
+                                    st.markdown("**🛡️ 미드필더**")
+                                    for p in f_mid: st.markdown(f"- {p}")
+                                if f_def:
+                                    st.markdown("**🧱 수비수**")
+                                    for p in f_def: st.markdown(f"- {p}")
+                                if f_un:
+                                    st.markdown("**❓ 기타**")
+                                    for p in f_un: st.markdown(f"- {p}")
+
+            # 경기 삭제 기능
+            st.divider()
+            if st.button("🗑️ 해당 경기 삭제", type="secondary"):
+                matches = [m for m in matches if m['id'] != selected_match_id]
+                save_matches_data(matches)
+                st.success("경기가 삭제되었습니다.")
+                st.rerun()
+
+    st.divider()
     if st.button("🔄 경기 목록 새로고침"):
         st.rerun()
+
 
 elif selected_menu == '경기 결과 기록':
     st.write("예정된 경기의 결과를 기록하고 선수 스탯을 업데이트합니다.")
